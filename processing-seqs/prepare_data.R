@@ -1,10 +1,12 @@
+  #!/.conda/envs/mach-1/bin Rscript
+
 library(optparse)
 library(data.table)
 library(stringr)
 library(rtracklayer)
 
 option_list <- list(
-  make_option(c("-s", "--species"), type = "character", default = 'human', help = "Species name (human or mouse)"),
+  make_option(c("-s", "--species"), type = "character", default = 'mouse', help = "Species name (human or mouse)"),
   make_option(c("-f", "--flank_len"), type = "integer", default = 16, help = "Flanking length"),
   make_option(c("-m", "--max_seq_len"), type = "integer", default = 2^16, help = "Maximum sequence length")
 )
@@ -33,10 +35,10 @@ if (species == 'human') {
   
   library(BSgenome.Mmusculus.UCSC.mm39)
   ref_genome <- BSgenome.Mmusculus.UCSC.mm39
-  gtf_file <- '/scratch/asabe/projects/foundation-model/preprocess/pre-mrna/data/databank_mouse_bambu_se_discovery.gtf'
-  assembly_report_file <- '/scratch/asabe/projects/pacbio/data/references/genome/GCF_000001635.27_GRCm39_assembly_report.txt'
+  gtf_file <- 'data/transcriptome/databank_mouse_bambu_se_discovery.gtf'
+  assembly_report_file <- 'data/GCF_000001635.27_GRCm39_assembly_report.txt'
   species_token <- 'M'
-  output_file <- '/scratch/asabe/projects/foundation-model/preprocess/pre-mrna/data/databank_mouse_bambu_se_discovery.preprocessed.updated.csv.gz'
+  output_file <- 'data/preprocess/databank_mouse_bambu_se_discovery.preprocessed.updated.csv.gz'
   
 }
 
@@ -220,4 +222,4 @@ setcolorder(tr_seqs, c('species', 'chr', 'strand', 'gene_start', 'gene_end', 'ge
 setorderv(tr_seqs, c('species', 'chr', 'gene_start', 'gene_id', 'tr_start', 'transcript_id'))
 
 include_header <- ifelse(species %like% 'human', TRUE, FALSE)
-fwrite(tr_seqs, file = output_file, col.names = include_header)
+fwrite(tr_seqs, file = output_file, col.names = TRUE) # include_header)

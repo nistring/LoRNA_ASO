@@ -149,6 +149,95 @@ class StripedHyenaModelForCausalLM(StripedHyenaPreTrainedModel):
             "past_key_values": past_key_values,
         }
 
+    def generate(
+        self,
+        input_ids: torch.LongTensor,
+        num_return_sequences: int = 1,
+        max_new_tokens: int = 20,
+        do_sample: bool = False,
+        eos_token_id: Optional[int] = None,
+        pad_token_id: Optional[int] = None,
+        temperature: float = 1.0,
+        top_k: int = 0,
+        top_p: float = 1.0,
+        use_cache: bool = True,
+        attention_mask: Optional[torch.LongTensor] = None,
+        **kwargs,
+    ) -> torch.LongTensor:
+        # Minimal, self-contained generation to avoid relying on HF GenerationMixin
+        device = input_ids.device
+        self.eval()
+        if eos_token_id is None and hasattr(self.config, "eos_token_id"):
+            eos_token_id = self.config.eos_token_id
+        if pad_token_id is None:
+            pad_token_id = eos_token_id
+
+        # Duplicate prompts for num_return_sequences
+        if num_return_sequences > 1:
+            input_ids = input_ids.repeat_interleave(num_return_sequences, dim=0)
+            if attention_mask is not None:
+                attention_mask = attention_mask.repeat_interleave(num_return_sequences, dim=0)
+
+        sequences = input_ids
+        batch_size = sequences.size(0)
+        finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
+
+        def top_k_top_p_filtering(logits: torch.Tensor, top_k: int = 0, top_p: float = 1.0):
+            top_k = max(top_k, 0)
+            if top_k > 0:
+                values, _ = torch.topk(logits, top_k)
+                min_values = values[:, -1].unsqueeze(-1)
+                logits = torch.where(logits < min_values, torch.full_like(logits, -float("inf")), logits)
+            if 0.0 < top_p < 1.0:
+                sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
+                cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
+                sorted_indices_to_remove = cumulative_probs > top_p
+                sorted_indices_to_remove[:, 1:] = sorted_indices_to_remove[:, :-1].clone()
+                sorted_indices_to_remove[:, 0] = 0
+                indices_to_remove = torch.zeros_like(logits, dtype=torch.bool)
+                indices_to_remove.scatter_(1, sorted_indices, sorted_indices_to_remove)
+                logits = logits.masked_fill(indices_to_remove, -float("inf"))
+            return logits
+
+        past_key_values = None
+
+        with torch.no_grad():
+            for _ in range(max_new_tokens):
+                outputs = self.forward(
+                    input_ids=sequences if past_key_values is None else sequences[:, -1:],
+                    attention_mask=attention_mask,
+                    use_cache=use_cache,
+                    past_key_values=past_key_values,
+                    return_dict=True,
+                )
+                logits = outputs.logits[:, -1, :]  # last token logits
+                past_key_values = outputs.past_key_values if use_cache else None
+
+                next_token_logits = logits.to(dtype=torch.float32)
+                if temperature is not None and temperature > 0:
+                    next_token_logits = next_token_logits / temperature
+
+                if do_sample:
+                    filtered = top_k_top_p_filtering(next_token_logits, top_k=top_k, top_p=top_p)
+                    probs = torch.softmax(filtered, dim=-1)
+                    next_tokens = torch.multinomial(probs, num_samples=1).squeeze(-1)
+                else:
+                    next_tokens = torch.argmax(next_token_logits, dim=-1)
+
+                if eos_token_id is not None:
+                    # If already finished, keep padding token
+                    next_tokens = torch.where(
+                        finished, torch.full_like(next_tokens, pad_token_id), next_tokens
+                    )
+
+                sequences = torch.cat([sequences, next_tokens.unsqueeze(-1)], dim=-1)
+
+                if eos_token_id is not None:
+                    finished = finished | (next_tokens == eos_token_id)
+                    if torch.all(finished):
+                        break
+
+        return sequences
 
 class StripedHyenaForEmbeddings(StripedHyena):
     def __init__(self, config, tokenizer):
@@ -222,7 +311,7 @@ class StripedHyenaModelForExtractingEmbeddings(StripedHyenaPreTrainedModel):
     def __init__(self, config, **kwargs):
         super().__init__(config, **kwargs)
         model_config = dotdict(config.to_dict())
-        self.backbone = StripedHyenaForEmbeddings(model_config)
+        self.backbone = StripedHyenaForEmbeddings(model_config, **kwargs)
         self.backbone.gradient_checkpointing = False
         self.config = config
         self.post_init()
